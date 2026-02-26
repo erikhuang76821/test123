@@ -1,453 +1,530 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { 
-  LineChart, Line, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar
-} from 'recharts';
-import { Settings, RefreshCw, AlertCircle, Database, Check, Columns, Download, LayoutDashboard } from 'lucide-react';
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>動態數據看板 - PWA Ready</title>
+    
+    <!-- PWA Meta 標籤 -->
+    <meta name="theme-color" content="#3b82f6">
+    <meta name="apple-mobile-web-app-capable" content="yes">
 
-// --- 工具函數：解析 CSV ---
-const parseCSV = (text) => {
-  const rows = [];
-  let currentRow = [];
-  let currentCell = '';
-  let inQuotes = false;
-  
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    if (char === '"' && text[i+1] === '"') {
-      currentCell += '"';
-      i++;
-    } else if (char === '"') {
-      inQuotes = !inQuotes;
-    } else if (char === ',' && !inQuotes) {
-      currentRow.push(currentCell);
-      currentCell = '';
-    } else if (char === '\n' && !inQuotes) {
-      currentRow.push(currentCell);
-      rows.push(currentRow);
-      currentRow = [];
-      currentCell = '';
-    } else if (char !== '\r') {
-      currentCell += char;
-    }
-  }
-  if (currentCell || text[text.length - 1] === ',') currentRow.push(currentCell);
-  if (currentRow.length > 0) rows.push(currentRow);
+    <!-- Tailwind CSS (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Chart.js (CDN) -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Lucide Icons (CDN) -->
+    <script src="https://unpkg.com/lucide@latest"></script>
 
-  const headers = rows[0]?.map(h => h.trim()) || [];
-  const data = rows.slice(1).map((row, index) => {
-    const obj = { _id: index }; // 給予唯一 ID
-    headers.forEach((h, i) => {
-      let val = row[i] ? row[i].trim() : '';
-      // 嘗試轉換為數字，以便繪圖
-      if (val !== '' && !isNaN(val)) {
-        val = Number(val);
-      }
-      obj[h] = val;
-    });
-    return obj;
-  });
-
-  return { headers, data };
-};
-
-// --- PWA Meta 標籤注入 ---
-const injectPWAMetaTags = () => {
-  if (!document.querySelector('meta[name="theme-color"]')) {
-    const metaTheme = document.createElement('meta');
-    metaTheme.name = 'theme-color';
-    metaTheme.content = '#3b82f6';
-    document.head.appendChild(metaTheme);
-  }
-  if (!document.querySelector('meta[name="apple-mobile-web-app-capable"]')) {
-    const metaApple = document.createElement('meta');
-    metaApple.name = 'apple-mobile-web-app-capable';
-    metaApple.content = 'yes';
-    document.head.appendChild(metaApple);
-  }
-};
-
-// 顏色庫供圖表使用
-const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
-
-export default function App() {
-  // --- 狀態管理 ---
-  const defaultUrl = 'https://docs.google.com/spreadsheets/d/1h9y5EMPISDJUXae1YRSVIJ-FBW-JvB0spADmzrzcIs8/export?format=csv&gid=1693129113';
-  
-  const [sheetUrl, setSheetUrl] = useState(() => localStorage.getItem('sheetUrl') || defaultUrl);
-  const [inputUrl, setInputUrl] = useState(sheetUrl);
-  const [data, setData] = useState([]);
-  const [headers, setHeaders] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-  
-  // 圖表配置
-  const [xAxisCol, setXAxisCol] = useState(() => localStorage.getItem('xAxisCol') || '');
-  const [yAxisCols, setYAxisCols] = useState(() => {
-    const saved = localStorage.getItem('yAxisCols');
-    return saved ? JSON.parse(saved) : [];
-  });
-  const [chartType, setChartType] = useState(() => localStorage.getItem('chartType') || 'line');
-  
-  // UI 狀態
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-
-  // --- 初始化與 PWA 準備 ---
-  useEffect(() => {
-    injectPWAMetaTags();
-    // 模擬 Service Worker 註冊 (在實務中需獨立檔案)
-    if ('serviceWorker' in navigator && process.env.NODE_ENV === 'production') {
-      console.log('PWA Service Worker readiness detected.');
-    }
-  }, []);
-
-  // --- 資料抓取邏輯 ---
-  const fetchData = useCallback(async (urlToFetch) => {
-    setLoading(true);
-    setError(null);
-    try {
-      // 將一般 Google Sheet 網址轉換為 CSV 匯出網址 (如果使用者貼上的是編輯網址)
-      let fetchUrl = urlToFetch;
-      try {
-        const urlObj = new URL(fetchUrl);
-        const match = fetchUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
-        const sheetId = match ? match[1] : '';
-        let gid = '0';
-        if (urlObj.hash.includes('gid=')) {
-           gid = urlObj.hash.split('gid=')[1].split('&')[0];
-        } else if (urlObj.searchParams.has('gid')) {
-           gid = urlObj.searchParams.get('gid');
-        } else if (fetchUrl.includes('gid=')) {
-           const gidMatch = fetchUrl.match(/gid=([0-9]+)/);
-           if (gidMatch) gid = gidMatch[1];
+    <style>
+        /* 自訂捲軸樣式 */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
         }
-        if (sheetId) {
-          fetchUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f5f9; 
+            border-radius: 4px;
         }
-      } catch (e) {
-        console.warn('URL 解析失敗，嘗試直接使用原網址', e);
-      }
-
-      let response;
-      try {
-        // 嘗試直接抓取 (若試算表有設定「發佈到網路」可能直接成功)
-        response = await fetch(fetchUrl);
-        if (!response.ok) throw new Error('Direct fetch failed');
-      } catch (fetchErr) {
-        // 若發生 TypeError: Failed to fetch (CORS 跨域阻擋)，自動切換至 Proxy 代理
-        console.warn('直接讀取遇到 CORS 阻擋，自動啟用 Proxy 備案...');
-        const cacheBuster = `&_t=${new Date().getTime()}`;
-        const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(fetchUrl + cacheBuster)}`;
-        response = await fetch(proxyUrl);
-      }
-
-      if (!response || !response.ok) throw new Error('無法讀取資料，請確認試算表已設定為「知道連結的人均可檢視」');
-      
-      const csvText = await response.text();
-      const parsed = parseCSV(csvText);
-      
-      setData(parsed.data);
-      setHeaders(parsed.headers);
-
-      // 自動配置預設軸
-      if (parsed.headers.length > 0) {
-        if (!xAxisCol || !parsed.headers.includes(xAxisCol)) {
-          // 嘗試尋找看起來像日期的欄位，否則選第一個
-          const dateCol = parsed.headers.find(h => h.toLowerCase().includes('date') || h.includes('日期') || h.includes('時間'));
-          const newX = dateCol || parsed.headers[0];
-          setXAxisCol(newX);
-          localStorage.setItem('xAxisCol', newX);
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1; 
+            border-radius: 4px;
         }
-        
-        if (yAxisCols.length === 0 || !yAxisCols.some(col => parsed.headers.includes(col))) {
-          // 選擇剩下的數字欄位
-          const newY = parsed.headers.filter(h => h !== (xAxisCol || parsed.headers[0])).slice(0, 3);
-          setYAxisCols(newY);
-          localStorage.setItem('yAxisCols', JSON.stringify(newY));
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8; 
         }
-      }
-      
-      // 快取成功獲取的資料 (離線支援)
-      localStorage.setItem('cachedData', JSON.stringify(parsed.data));
-      localStorage.setItem('cachedHeaders', JSON.stringify(parsed.headers));
-      localStorage.setItem('sheetUrl', fetchUrl);
-      setSheetUrl(fetchUrl);
-      setInputUrl(fetchUrl);
+        /* 隱藏元素用的 class */
+        .hidden-el { display: none !important; }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-50 text-gray-900 font-sans flex flex-col transition-colors duration-200">
 
-    } catch (err) {
-      console.error(err);
-      setError(err.message);
-      // 嘗試載入離線快取
-      const cachedData = localStorage.getItem('cachedData');
-      const cachedHeaders = localStorage.getItem('cachedHeaders');
-      if (cachedData && cachedHeaders) {
-        setData(JSON.parse(cachedData));
-        setHeaders(JSON.parse(cachedHeaders));
-        setError('目前處於離線狀態或連線失敗，顯示快取資料。');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [xAxisCol, yAxisCols]);
-
-  useEffect(() => {
-    fetchData(sheetUrl);
-  }, [fetchData, sheetUrl]);
-
-  // --- 事件處理 ---
-  const handleSaveSettings = () => {
-    setSheetUrl(inputUrl);
-    localStorage.setItem('chartType', chartType);
-    setIsSettingsOpen(false);
-  };
-
-  const toggleYAxis = (col) => {
-    const newY = yAxisCols.includes(col) 
-      ? yAxisCols.filter(c => c !== col)
-      : [...yAxisCols, col];
-    setYAxisCols(newY);
-    localStorage.setItem('yAxisCols', JSON.stringify(newY));
-  };
-
-  const handleXAxisChange = (e) => {
-    const val = e.target.value;
-    setXAxisCol(val);
-    localStorage.setItem('xAxisCol', val);
-  };
-
-  // --- 繪圖元件選擇 ---
-  const renderChart = () => {
-    if (data.length === 0) return <div className="flex items-center justify-center h-full text-gray-500">無資料可顯示</div>;
-
-    const ChartComponent = chartType === 'area' ? AreaChart : (chartType === 'bar' ? BarChart : LineChart);
-    const DataComponent = chartType === 'area' ? Area : (chartType === 'bar' ? Bar : Line);
-
-    return (
-      <ResponsiveContainer width="100%" height="100%">
-        <ChartComponent data={data} margin={{ top: 20, right: 30, left: 20, bottom: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" vertical={false} />
-          <XAxis 
-            dataKey={xAxisCol} 
-            stroke="#6b7280" 
-            tick={{ fill: '#6b7280', fontSize: 12 }} 
-            tickMargin={10}
-          />
-          <YAxis 
-            stroke="#6b7280" 
-            tick={{ fill: '#6b7280', fontSize: 12 }} 
-            tickMargin={10}
-          />
-          <Tooltip 
-            contentStyle={{ borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)' }}
-          />
-          <Legend wrapperStyle={{ paddingTop: '20px' }} />
-          
-          {yAxisCols.map((col, index) => (
-            <DataComponent
-              key={col}
-              type="monotone"
-              dataKey={col}
-              stroke={CHART_COLORS[index % CHART_COLORS.length]}
-              fill={chartType === 'area' ? CHART_COLORS[index % CHART_COLORS.length] : undefined}
-              fillOpacity={chartType === 'area' ? 0.3 : 1}
-              strokeWidth={chartType === 'line' ? 3 : 1}
-              activeDot={{ r: 6, strokeWidth: 0 }}
-              radius={chartType === 'bar' ? [4, 4, 0, 0] : 0}
-            />
-          ))}
-        </ChartComponent>
-      </ResponsiveContainer>
-    );
-  };
-
-  return (
-    <div className="min-h-screen bg-gray-50 text-gray-900 font-sans flex flex-col transition-colors duration-200">
-      
-      {/* 導覽列 */}
-      <header className="bg-white shadow-sm sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <div className="flex items-center space-x-3">
-            <div className="bg-blue-600 p-2 rounded-lg">
-              <LayoutDashboard className="w-5 h-5 text-white" />
+    <!-- 導覽列 -->
+    <header class="bg-white shadow-sm sticky top-0 z-10">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="bg-blue-600 p-2 rounded-lg">
+                    <i data-lucide="layout-dashboard" class="w-5 h-5 text-white"></i>
+                </div>
+                <h1 class="font-bold text-xl text-gray-800 tracking-tight flex items-center">
+                    動態數據看板 
+                    <span class="text-xs text-blue-600 bg-blue-100 px-2 py-1 rounded-full ml-2 font-normal">PWA Ready</span>
+                </h1>
             </div>
-            <h1 className="font-bold text-xl text-gray-800 tracking-tight">動態數據看板 <span className="text-xs text-blue-600 bg-blue-100 px-2 py-1 rounded-full ml-2">PWA Ready</span></h1>
-          </div>
-          
-          <div className="flex items-center space-x-2 sm:space-x-4">
-            <button 
-              onClick={() => fetchData(sheetUrl)}
-              className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors flex items-center"
-              title="重新整理資料"
-            >
-              <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-            <button 
-              onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-              className={`p-2 rounded-full transition-colors flex items-center ${isSettingsOpen ? 'bg-blue-100 text-blue-600' : 'text-gray-500 hover:text-blue-600 hover:bg-blue-50'}`}
-              title="設定"
-            >
-              <Settings className="w-5 h-5" />
-            </button>
-          </div>
+            
+            <div class="flex items-center space-x-2 sm:space-x-4">
+                <button id="refreshBtn" class="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-full transition-colors flex items-center" title="重新整理資料">
+                    <i data-lucide="refresh-cw" class="w-5 h-5" id="refreshIcon"></i>
+                </button>
+                <button id="settingsBtn" class="p-2 rounded-full transition-colors flex items-center text-gray-500 hover:text-blue-600 hover:bg-blue-50" title="設定">
+                    <i data-lucide="settings" class="w-5 h-5"></i>
+                </button>
+            </div>
         </div>
-      </header>
+    </header>
 
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6">
+    <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 flex flex-col gap-6">
         
-        {/* 錯誤提示 */}
-        {error && (
-          <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg flex items-start shadow-sm">
-            <AlertCircle className="w-5 h-5 text-red-500 mr-3 flex-shrink-0 mt-0.5" />
-            <p className="text-red-700 text-sm">{error}</p>
-          </div>
-        )}
+        <!-- 錯誤提示 -->
+        <div id="errorBox" class="hidden-el bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg flex items-start shadow-sm">
+            <i data-lucide="alert-circle" class="w-5 h-5 text-red-500 mr-3 flex-shrink-0 mt-0.5"></i>
+            <p id="errorMessage" class="text-red-700 text-sm"></p>
+        </div>
 
-        {/* 設定面板 */}
-        {isSettingsOpen && (
-          <div className="bg-white rounded-xl shadow-md border border-gray-100 p-5 sm:p-6 animate-in slide-in-from-top-4 fade-in duration-200">
-            <h2 className="text-lg font-semibold mb-4 flex items-center text-gray-800">
-              <Database className="w-5 h-5 mr-2 text-blue-500" />
-              資料來源與顯示設定
+        <!-- 設定面板 -->
+        <div id="settingsPanel" class="hidden-el bg-white rounded-xl shadow-md border border-gray-100 p-5 sm:p-6 transition-all duration-200">
+            <h2 class="text-lg font-semibold mb-4 flex items-center text-gray-800">
+                <i data-lucide="database" class="w-5 h-5 mr-2 text-blue-500"></i>
+                資料來源與顯示設定
             </h2>
             
-            <div className="space-y-5">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">Google Sheet 網址 (公開檢視或 CSV 格式)</label>
-                <div className="flex gap-2">
-                  <input 
-                    type="text" 
-                    value={inputUrl}
-                    onChange={(e) => setInputUrl(e.target.value)}
-                    className="flex-1 px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-sm"
-                    placeholder="https://docs.google.com/spreadsheets/d/..."
-                  />
-                  <button 
-                    onClick={handleSaveSettings}
-                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
-                  >
-                    套用
-                  </button>
-                </div>
-                <p className="text-xs text-gray-500 mt-2 flex items-center">
-                  <AlertCircle className="w-3 h-3 mr-1" /> 請確保試算表共用權限為「知道連結的人均可檢視」。
-                </p>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-gray-100">
-                {/* 圖表類型選擇 */}
+            <div class="space-y-5">
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">圖表類型</label>
-                  <select 
-                    value={chartType}
-                    onChange={(e) => setChartType(e.target.value)}
-                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-                  >
-                    <option value="line">折線圖 (Line)</option>
-                    <option value="area">面積圖 (Area)</option>
-                    <option value="bar">長條圖 (Bar)</option>
-                  </select>
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Google Sheet 網址 (公開檢視或 CSV 格式)</label>
+                    <div class="flex gap-2">
+                        <input type="text" id="sheetUrlInput" class="flex-1 px-4 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all text-sm" placeholder="https://docs.google.com/spreadsheets/d/...">
+                        <button id="applyBtn" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm whitespace-nowrap">
+                            套用
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2 flex items-center">
+                        <i data-lucide="alert-circle" class="w-3 h-3 mr-1"></i> 請確保試算表共用權限為「知道連結的人均可檢視」。
+                    </p>
                 </div>
 
-                {/* X軸設定 */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">X 軸欄位 (維度)</label>
-                  <select 
-                    value={xAxisCol} 
-                    onChange={handleXAxisChange}
-                    className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm"
-                  >
-                    {headers.map(h => (
-                      <option key={h} value={h}>{h}</option>
-                    ))}
-                  </select>
-                </div>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-gray-100">
+                    <!-- 圖表類型選擇 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">圖表類型</label>
+                        <select id="chartTypeSelect" class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                            <option value="line">折線圖 (Line)</option>
+                            <option value="area">面積圖 (Area)</option>
+                            <option value="bar">長條圖 (Bar)</option>
+                        </select>
+                    </div>
 
-                {/* Y軸設定 */}
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Y 軸欄位 (指標 / 多選)</label>
-                  <div className="max-h-32 overflow-y-auto space-y-1 bg-gray-50 p-2 rounded-lg border border-gray-200">
-                    {headers.map(h => (
-                      <label key={h} className="flex items-center space-x-2 cursor-pointer p-1 hover:bg-gray-100 rounded">
-                        <div className={`w-4 h-4 rounded border flex items-center justify-center ${yAxisCols.includes(h) ? 'bg-blue-500 border-blue-500 text-white' : 'border-gray-300 bg-white'}`}>
-                          {yAxisCols.includes(h) && <Check className="w-3 h-3" />}
+                    <!-- X軸設定 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">X 軸欄位 (維度)</label>
+                        <select id="xAxisSelect" class="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+                            <!-- Options generated dynamically -->
+                        </select>
+                    </div>
+
+                    <!-- Y軸設定 -->
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Y 軸欄位 (指標 / 多選)</label>
+                        <div id="yAxisContainer" class="max-h-32 overflow-y-auto custom-scrollbar space-y-1 bg-gray-50 p-2 rounded-lg border border-gray-200">
+                            <!-- Checkboxes generated dynamically -->
                         </div>
-                        <input 
-                          type="checkbox" 
-                          className="hidden"
-                          checked={yAxisCols.includes(h)}
-                          onChange={() => toggleYAxis(h)}
-                        />
-                        <span className="text-sm text-gray-700 truncate">{h}</span>
-                      </label>
-                    ))}
-                  </div>
+                    </div>
                 </div>
-              </div>
             </div>
-          </div>
-        )}
-
-        {/* 核心內容區 */}
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
-          
-          {/* 左側資訊卡片 (概覽) */}
-          <div className="lg:col-span-1 space-y-4">
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
-              <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">資料狀態</h3>
-              <div className="flex items-center justify-between py-2 border-b border-gray-50">
-                <span className="text-gray-600 text-sm">總筆數</span>
-                <span className="font-bold text-gray-900">{data.length}</span>
-              </div>
-              <div className="flex items-center justify-between py-2 border-b border-gray-50">
-                <span className="text-gray-600 text-sm">欄位數</span>
-                <span className="font-bold text-gray-900">{headers.length}</span>
-              </div>
-              <div className="flex items-center justify-between py-2">
-                <span className="text-gray-600 text-sm">最後更新</span>
-                <span className="font-bold text-gray-900 text-sm">剛剛</span>
-              </div>
-            </div>
-
-            <div className="bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-sm p-5 text-white">
-              <h3 className="font-semibold mb-2 flex items-center">
-                <Columns className="w-4 h-4 mr-2" /> 欄位分析
-              </h3>
-              <p className="text-sm text-blue-100 opacity-90 leading-relaxed mb-4">
-                系統已自動解析您的 Google Sheet，目前以 <strong className="text-white">{xAxisCol || '未選擇'}</strong> 為基準，追蹤 <strong className="text-white">{yAxisCols.length}</strong> 項指標。
-              </p>
-              <button 
-                onClick={() => setIsSettingsOpen(true)}
-                className="w-full bg-white/20 hover:bg-white/30 transition-colors py-2 rounded-lg text-sm font-medium backdrop-blur-sm"
-              >
-                修改配置
-              </button>
-            </div>
-          </div>
-
-          {/* 右側圖表區 */}
-          <div className="lg:col-span-3 bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 flex flex-col min-h-[400px]">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-bold text-gray-800">
-                趨勢圖表
-                {loading && <span className="ml-3 text-sm font-normal text-blue-500 animate-pulse">載入中...</span>}
-              </h2>
-            </div>
-            
-            <div className="flex-1 w-full relative">
-              {loading && data.length === 0 ? (
-                <div className="absolute inset-0 flex items-center justify-center bg-white/80 z-10 rounded-lg">
-                  <div className="flex flex-col items-center">
-                    <RefreshCw className="w-8 h-8 text-blue-500 animate-spin mb-4" />
-                    <p className="text-gray-500 font-medium">解析資料中...</p>
-                  </div>
-                </div>
-              ) : null}
-              
-              {renderChart()}
-            </div>
-          </div>
         </div>
 
-      </main>
-    </div>
-  );
-}
+        <!-- 核心內容區 -->
+        <div class="grid grid-cols-1 lg:grid-cols-4 gap-6 flex-1">
+            
+            <!-- 左側資訊卡片 (概覽) -->
+            <div class="lg:col-span-1 space-y-4">
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-5">
+                    <h3 class="text-sm font-semibold text-gray-500 uppercase tracking-wider mb-3">資料狀態</h3>
+                    <div class="flex items-center justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-600 text-sm">總筆數</span>
+                        <span id="totalRows" class="font-bold text-gray-900">0</span>
+                    </div>
+                    <div class="flex items-center justify-between py-2 border-b border-gray-50">
+                        <span class="text-gray-600 text-sm">欄位數</span>
+                        <span id="totalCols" class="font-bold text-gray-900">0</span>
+                    </div>
+                    <div class="flex items-center justify-between py-2">
+                        <span class="text-gray-600 text-sm">最後更新</span>
+                        <span class="font-bold text-gray-900 text-sm" id="lastUpdateTime">剛剛</span>
+                    </div>
+                </div>
+
+                <div class="bg-gradient-to-br from-blue-500 to-indigo-600 rounded-xl shadow-sm p-5 text-white">
+                    <h3 class="font-semibold mb-2 flex items-center">
+                        <i data-lucide="columns" class="w-4 h-4 mr-2"></i> 欄位分析
+                    </h3>
+                    <p class="text-sm text-blue-100 opacity-90 leading-relaxed mb-4">
+                        系統已自動解析您的 Google Sheet，目前以 <strong id="lblXAxis" class="text-white">未選擇</strong> 為基準，追蹤 <strong id="lblYAxisCount" class="text-white">0</strong> 項指標。
+                    </p>
+                    <button id="editConfigBtn" class="w-full bg-white/20 hover:bg-white/30 transition-colors py-2 rounded-lg text-sm font-medium backdrop-blur-sm">
+                        修改配置
+                    </button>
+                </div>
+            </div>
+
+            <!-- 右側圖表區 -->
+            <div class="lg:col-span-3 bg-white rounded-xl shadow-sm border border-gray-100 p-4 sm:p-6 flex flex-col min-h-[400px]">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-bold text-gray-800 flex items-center">
+                        趨勢圖表
+                        <span id="loadingIndicator" class="hidden-el ml-3 text-sm font-normal text-blue-500 animate-pulse">載入中...</span>
+                    </h2>
+                </div>
+                
+                <div class="flex-1 w-full relative min-h-[350px]">
+                    <!-- 初始無資料的 Loader -->
+                    <div id="initialLoader" class="absolute inset-0 flex items-center justify-center bg-white z-10 rounded-lg">
+                        <div class="flex flex-col items-center">
+                            <i data-lucide="refresh-cw" class="w-8 h-8 text-blue-500 animate-spin mb-4"></i>
+                            <p class="text-gray-500 font-medium">解析資料中...</p>
+                        </div>
+                    </div>
+                    
+                    <canvas id="myChart"></canvas>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        // --- 顏色庫 ---
+        const CHART_COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4'];
+        
+        // 顏色轉換工具 (用於面積圖的背景透明度)
+        const hexToRgba = (hex, alpha) => {
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        };
+
+        // --- 全域狀態 ---
+        let state = {
+            sheetUrl: localStorage.getItem('sheetUrl') || 'https://docs.google.com/spreadsheets/d/1h9y5EMPISDJUXae1YRSVIJ-FBW-JvB0spADmzrzcIs8/export?format=csv&gid=1693129113',
+            data: [],
+            headers: [],
+            xAxisCol: localStorage.getItem('xAxisCol') || '',
+            yAxisCols: JSON.parse(localStorage.getItem('yAxisCols') || '[]'),
+            chartType: localStorage.getItem('chartType') || 'line',
+            isSettingsOpen: false,
+            chartInstance: null
+        };
+
+        // --- DOM 元素參照 ---
+        const els = {
+            settingsPanel: document.getElementById('settingsPanel'),
+            settingsBtn: document.getElementById('settingsBtn'),
+            editConfigBtn: document.getElementById('editConfigBtn'),
+            refreshBtn: document.getElementById('refreshBtn'),
+            refreshIcon: document.getElementById('refreshIcon'),
+            applyBtn: document.getElementById('applyBtn'),
+            sheetUrlInput: document.getElementById('sheetUrlInput'),
+            chartTypeSelect: document.getElementById('chartTypeSelect'),
+            xAxisSelect: document.getElementById('xAxisSelect'),
+            yAxisContainer: document.getElementById('yAxisContainer'),
+            errorBox: document.getElementById('errorBox'),
+            errorMessage: document.getElementById('errorMessage'),
+            totalRows: document.getElementById('totalRows'),
+            totalCols: document.getElementById('totalCols'),
+            lastUpdateTime: document.getElementById('lastUpdateTime'),
+            lblXAxis: document.getElementById('lblXAxis'),
+            lblYAxisCount: document.getElementById('lblYAxisCount'),
+            loadingIndicator: document.getElementById('loadingIndicator'),
+            initialLoader: document.getElementById('initialLoader'),
+            ctx: document.getElementById('myChart').getContext('2d')
+        };
+
+        // 初始化圖示
+        lucide.createIcons();
+        els.sheetUrlInput.value = state.sheetUrl;
+        els.chartTypeSelect.value = state.chartType;
+
+        // --- 工具函數：解析 CSV ---
+        const parseCSV = (text) => {
+            const rows = [];
+            let currentRow = [];
+            let currentCell = '';
+            let inQuotes = false;
+            
+            for (let i = 0; i < text.length; i++) {
+                const char = text[i];
+                if (char === '"' && text[i+1] === '"') {
+                    currentCell += '"';
+                    i++;
+                } else if (char === '"') {
+                    inQuotes = !inQuotes;
+                } else if (char === ',' && !inQuotes) {
+                    currentRow.push(currentCell);
+                    currentCell = '';
+                } else if (char === '\n' && !inQuotes) {
+                    currentRow.push(currentCell);
+                    rows.push(currentRow);
+                    currentRow = [];
+                    currentCell = '';
+                } else if (char !== '\r') {
+                    currentCell += char;
+                }
+            }
+            if (currentCell || text[text.length - 1] === ',') currentRow.push(currentCell);
+            if (currentRow.length > 0) rows.push(currentRow);
+
+            const headers = rows[0]?.map(h => h.trim()) || [];
+            const data = rows.slice(1).map((row) => {
+                const obj = {};
+                headers.forEach((h, i) => {
+                    let val = row[i] ? row[i].trim() : '';
+                    if (val !== '' && !isNaN(val)) val = Number(val);
+                    obj[h] = val;
+                });
+                return obj;
+            });
+
+            return { headers, data };
+        };
+
+        // --- UI 更新邏輯 ---
+        const toggleSettings = (forceState) => {
+            state.isSettingsOpen = forceState !== undefined ? forceState : !state.isSettingsOpen;
+            if (state.isSettingsOpen) {
+                els.settingsPanel.classList.remove('hidden-el');
+                els.settingsBtn.classList.add('bg-blue-100', 'text-blue-600');
+            } else {
+                els.settingsPanel.classList.add('hidden-el');
+                els.settingsBtn.classList.remove('bg-blue-100', 'text-blue-600');
+            }
+        };
+
+        const showError = (msg) => {
+            if (msg) {
+                els.errorMessage.textContent = msg;
+                els.errorBox.classList.remove('hidden-el');
+            } else {
+                els.errorBox.classList.add('hidden-el');
+            }
+        };
+
+        const updateUIControls = () => {
+            // 更新 X 軸下拉選單
+            els.xAxisSelect.innerHTML = '';
+            state.headers.forEach(h => {
+                const opt = document.createElement('option');
+                opt.value = h;
+                opt.textContent = h;
+                if (h === state.xAxisCol) opt.selected = true;
+                els.xAxisSelect.appendChild(opt);
+            });
+
+            // 更新 Y 軸 Checkbox
+            els.yAxisContainer.innerHTML = '';
+            state.headers.forEach(h => {
+                const label = document.createElement('label');
+                label.className = 'flex items-center space-x-2 cursor-pointer p-1.5 hover:bg-gray-100 rounded transition-colors';
+                
+                const isChecked = state.yAxisCols.includes(h);
+                label.innerHTML = `
+                    <input type="checkbox" value="${h}" class="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-4 h-4 cursor-pointer" ${isChecked ? 'checked' : ''}>
+                    <span class="text-sm text-gray-700 truncate">${h}</span>
+                `;
+                
+                label.querySelector('input').addEventListener('change', (e) => {
+                    if (e.target.checked) {
+                        state.yAxisCols.push(h);
+                    } else {
+                        state.yAxisCols = state.yAxisCols.filter(col => col !== h);
+                    }
+                    localStorage.setItem('yAxisCols', JSON.stringify(state.yAxisCols));
+                    updateDashboardInfo();
+                    renderChart();
+                });
+                
+                els.yAxisContainer.appendChild(label);
+            });
+
+            updateDashboardInfo();
+        };
+
+        const updateDashboardInfo = () => {
+            els.totalRows.textContent = state.data.length;
+            els.totalCols.textContent = state.headers.length;
+            els.lblXAxis.textContent = state.xAxisCol || '未選擇';
+            els.lblYAxisCount.textContent = state.yAxisCols.length;
+            
+            const now = new Date();
+            els.lastUpdateTime.textContent = `${now.getHours().toString().padStart(2,'0')}:${now.getMinutes().toString().padStart(2,'0')}:${now.getSeconds().toString().padStart(2,'0')}`;
+        };
+
+        // --- 繪製圖表 (Chart.js) ---
+        const renderChart = () => {
+            if (state.data.length === 0) return;
+
+            // 隱藏 Loader
+            els.initialLoader.classList.add('hidden-el');
+
+            // 銷毀舊圖表
+            if (state.chartInstance) {
+                state.chartInstance.destroy();
+            }
+
+            const labels = state.data.map(row => row[state.xAxisCol] || '');
+            
+            const datasets = state.yAxisCols.map((col, index) => {
+                const color = CHART_COLORS[index % CHART_COLORS.length];
+                const chartType = state.chartType === 'area' ? 'line' : state.chartType; // Area 在 Chart.js 中是 type: line + fill: true
+                
+                return {
+                    label: col,
+                    data: state.data.map(row => row[col] || 0),
+                    type: chartType,
+                    backgroundColor: state.chartType === 'area' ? hexToRgba(color, 0.3) : color,
+                    borderColor: color,
+                    borderWidth: state.chartType === 'bar' ? 0 : 2,
+                    fill: state.chartType === 'area',
+                    tension: 0.3, // 曲線平滑度
+                    pointRadius: 3,
+                    pointHoverRadius: 6
+                };
+            });
+
+            state.chartInstance = new Chart(els.ctx, {
+                type: state.chartType === 'bar' ? 'bar' : 'line',
+                data: { labels, datasets },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false,
+                    },
+                    plugins: {
+                        legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } },
+                        tooltip: { backgroundColor: 'rgba(255, 255, 255, 0.95)', titleColor: '#1f2937', bodyColor: '#4b5563', borderColor: '#e5e7eb', borderWidth: 1, padding: 10, boxPadding: 4, cornerRadius: 8 }
+                    },
+                    scales: {
+                        x: { grid: { display: false }, ticks: { color: '#6b7280' } },
+                        y: { border: { dash: [4, 4] }, grid: { color: '#f3f4f6' }, ticks: { color: '#6b7280' } }
+                    }
+                }
+            });
+        };
+
+        // --- 資料抓取邏輯 ---
+        const fetchData = async (urlToFetch) => {
+            // UI 狀態：載入中
+            els.loadingIndicator.classList.remove('hidden-el');
+            els.refreshIcon.classList.add('animate-spin');
+            showError(null);
+            
+            try {
+                let fetchUrl = urlToFetch;
+                try {
+                    const urlObj = new URL(fetchUrl);
+                    const match = fetchUrl.match(/\/d\/([a-zA-Z0-9-_]+)/);
+                    const sheetId = match ? match[1] : '';
+                    let gid = '0';
+                    if (urlObj.hash.includes('gid=')) {
+                        gid = urlObj.hash.split('gid=')[1].split('&')[0];
+                    } else if (urlObj.searchParams.has('gid')) {
+                        gid = urlObj.searchParams.get('gid');
+                    } else if (fetchUrl.includes('gid=')) {
+                        const gidMatch = fetchUrl.match(/gid=([0-9]+)/);
+                        if (gidMatch) gid = gidMatch[1];
+                    }
+                    if (sheetId) {
+                        fetchUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=csv&gid=${gid}`;
+                    }
+                } catch (e) {
+                    console.warn('URL 解析失敗，嘗試直接使用原網址', e);
+                }
+
+                let response;
+                try {
+                    response = await fetch(fetchUrl);
+                    if (!response.ok) throw new Error('Direct fetch failed');
+                } catch (fetchErr) {
+                    console.warn('直接讀取遇到 CORS 阻擋，自動啟用 Proxy 備案...');
+                    const cacheBuster = `&_t=${new Date().getTime()}`;
+                    const proxyUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(fetchUrl + cacheBuster)}`;
+                    response = await fetch(proxyUrl);
+                }
+
+                if (!response || !response.ok) throw new Error('無法讀取資料，請確認試算表已設定為「知道連結的人均可檢視」');
+                
+                const csvText = await response.text();
+                const parsed = parseCSV(csvText);
+                
+                state.data = parsed.data;
+                state.headers = parsed.headers;
+
+                // 自動配置預設軸
+                if (parsed.headers.length > 0) {
+                    if (!state.xAxisCol || !parsed.headers.includes(state.xAxisCol)) {
+                        const dateCol = parsed.headers.find(h => h.toLowerCase().includes('date') || h.includes('日期') || h.includes('時間'));
+                        state.xAxisCol = dateCol || parsed.headers[0];
+                        localStorage.setItem('xAxisCol', state.xAxisCol);
+                    }
+                    
+                    if (state.yAxisCols.length === 0 || !state.yAxisCols.some(col => parsed.headers.includes(col))) {
+                        state.yAxisCols = parsed.headers.filter(h => h !== state.xAxisCol).slice(0, 3);
+                        localStorage.setItem('yAxisCols', JSON.stringify(state.yAxisCols));
+                    }
+                }
+
+                // 快取資料
+                localStorage.setItem('cachedData', JSON.stringify(state.data));
+                localStorage.setItem('cachedHeaders', JSON.stringify(state.headers));
+                localStorage.setItem('sheetUrl', fetchUrl);
+                
+                state.sheetUrl = fetchUrl;
+                els.sheetUrlInput.value = fetchUrl;
+
+                updateUIControls();
+                renderChart();
+
+            } catch (err) {
+                console.error(err);
+                
+                // 嘗試載入離線快取
+                const cachedData = localStorage.getItem('cachedData');
+                const cachedHeaders = localStorage.getItem('cachedHeaders');
+                if (cachedData && cachedHeaders) {
+                    state.data = JSON.parse(cachedData);
+                    state.headers = JSON.parse(cachedHeaders);
+                    updateUIControls();
+                    renderChart();
+                    showError('目前處於離線狀態或連線失敗，顯示快取資料。');
+                } else {
+                    showError(err.message);
+                }
+            } finally {
+                els.loadingIndicator.classList.add('hidden-el');
+                els.refreshIcon.classList.remove('animate-spin');
+            }
+        };
+
+        // --- 事件監聽綁定 ---
+        els.settingsBtn.addEventListener('click', () => toggleSettings());
+        els.editConfigBtn.addEventListener('click', () => toggleSettings(true));
+        els.refreshBtn.addEventListener('click', () => fetchData(state.sheetUrl));
+        
+        els.applyBtn.addEventListener('click', () => {
+            const newUrl = els.sheetUrlInput.value.trim();
+            if (newUrl) {
+                fetchData(newUrl);
+                toggleSettings(false);
+            }
+        });
+
+        els.chartTypeSelect.addEventListener('change', (e) => {
+            state.chartType = e.target.value;
+            localStorage.setItem('chartType', state.chartType);
+            renderChart();
+        });
+
+        els.xAxisSelect.addEventListener('change', (e) => {
+            state.xAxisCol = e.target.value;
+            localStorage.setItem('xAxisCol', state.xAxisCol);
+            updateDashboardInfo();
+            renderChart();
+        });
+
+        // --- 啟動應用程式 ---
+        fetchData(state.sheetUrl);
+
+    </script>
+</body>
+</html>
